@@ -1,4 +1,5 @@
-from detection.yolo_model import YoloModel
+from detection.pt.model_pt import YoloModel
+from detection.onnx.model_onnx import YoloOnnxModel
 import cv2
 import websockets
 import asyncio
@@ -18,7 +19,7 @@ def read_conf() -> dict:
             ret = yaml.load(yaml_file, Loader=yaml.FullLoader)
     return ret
 
-def detect_video(model: YoloModel, request_msg: dict, save_video_path: str):
+def detect_video(model, request_msg: dict, origin_video_path: str, save_video_path: str):
     """ request
     {
         'cmd': 'detect_video',
@@ -45,33 +46,39 @@ def detect_video(model: YoloModel, request_msg: dict, save_video_path: str):
     output_video = os.path.join(save_video_path, request_msg['data']['sync_id']+".mp4")
     temp_video = os.path.join(save_video_path, request_msg['data']['sync_id']+".avi")
     target_set = set()
-    cap = cv2.VideoCapture(request_msg['data']['video_path'])
+    cap = cv2.VideoCapture(os.path.join(origin_video_path, request_msg['data']['video_path']))
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-    out = cv2.VideoWriter(temp_video, fourcc, fps, (width, height))
+    #opencv直接保存
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
+
+    #借助ffmpeg保存
+    # fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+    # out = cv2.VideoWriter(temp_video, fourcc, fps, (width, height))
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
         predict_ret = model.predict(frame)
+        print(predict_ret)
         for item in predict_ret:
             target_set.add(item[5])
         model.draw_label_text(predict_ret, frame)
         out.write(frame)
     cap.release()
     out.release()
-    cmd = (
-        f"ffmpeg -y -i {temp_video} "
-        f"-vcodec libx264 -pix_fmt yuv420p {output_video}"
-    )
-    subprocess.run(cmd, shell=True)
-    os.remove(temp_video)
+
+    # cmd = (
+    #     f"ffmpeg -y -i {temp_video} "
+    #     f"-vcodec libx264 -pix_fmt yuv420p {output_video}"
+    # )
+    # subprocess.run(cmd, shell=True)
+    # os.remove(temp_video)
 
     response_msg = {
         'cmd': 'detect_video_ack',
@@ -89,7 +96,8 @@ def detect_video(model: YoloModel, request_msg: dict, save_video_path: str):
 
 def detect_main(request_queue: queue.Queue, response_queue: queue.Queue, conf_data: dict):
     print(f"[{datetime.now()}] model detect thread start ...")
-    model = YoloModel(conf_data['server_conf']['model_path'])
+    # model = YoloModel(conf_data['server_conf']['model_path'])
+    model = YoloOnnxModel(conf_data['server_conf']['model_path'])
     while True:
         try:
             request_msg = request_queue.get_nowait()
@@ -98,7 +106,7 @@ def detect_main(request_queue: queue.Queue, response_queue: queue.Queue, conf_da
             continue
         print(f"[{datetime.now()}] receive request msg : {request_msg}")
         if request_msg['cmd'] == 'detect_video':
-            ret = detect_video(model, request_msg, conf_data['server_conf']['predict_video_save_path'])
+            ret = detect_video(model, request_msg,conf_data['server_conf']['origin_video_path'], conf_data['server_conf']['predict_video_save_path'])
             print(f"[{datetime.now()}] detect video finish, response : {ret}")
             response_queue.put(ret)
 
