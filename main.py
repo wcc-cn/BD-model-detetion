@@ -1,5 +1,7 @@
+import threading
 from detection.pt.model_pt import YoloModel
 from detection.onnx.model_onnx import YoloOnnxModel
+from detection.tensorrt.model_tensorrt import YoloTrtModel
 import cv2
 import websockets
 import asyncio
@@ -11,6 +13,8 @@ from threading import Thread
 import queue
 import time
 import subprocess
+import pycuda.autoinit
+
 
 def read_conf() -> dict:
     ret = {}
@@ -65,7 +69,7 @@ def detect_video(model, request_msg: dict, origin_video_path: str, save_video_pa
         if not ret:
             break
         predict_ret = model.predict(frame)
-        print(predict_ret)
+        # print(predict_ret)
         for item in predict_ret:
             target_set.add(item[5])
         model.draw_label_text(predict_ret, frame)
@@ -94,10 +98,8 @@ def detect_video(model, request_msg: dict, origin_video_path: str, save_video_pa
     }
     return response_msg
 
-def detect_main(request_queue: queue.Queue, response_queue: queue.Queue, conf_data: dict):
+def detect_main(request_queue: queue.Queue, response_queue: queue.Queue, conf_data: dict, model):
     print(f"[{datetime.now()}] model detect thread start ...")
-    # model = YoloModel(conf_data['server_conf']['model_path'])
-    model = YoloOnnxModel(conf_data['server_conf']['model_path'])
     while True:
         try:
             request_msg = request_queue.get_nowait()
@@ -123,7 +125,7 @@ async def push_response(ws_client: websockets.ClientConnection, response_queue: 
 async def ws_main(conf_data: dict, request_queue: queue.Queue, response_queue: queue.Queue):
     uri = conf_data['server_conf']['server_conf']
     async with websockets.connect(uri) as ws_client:
-        await ws_client.send(json.dumps({'cmd':'connect', 'data':'keep live'}))
+        await ws_client.send(json.dumps({'cmd': 'connect', 'data': 'keep live'}))
         push_response_task = asyncio.create_task(push_response(ws_client, response_queue))
         while True:
             msg = await ws_client.recv()
@@ -132,17 +134,36 @@ async def ws_main(conf_data: dict, request_queue: queue.Queue, response_queue: q
             request_queue.put(json.loads(msg))
             await asyncio.sleep(0.1)
 
+def ws_thread(conf_data: dict, request_queue: queue.Queue, response_queue: queue.Queue):
+    asyncio.run(ws_main(conf_data, request_queue, response_queue))
+
 def main():
     conf_data = read_conf()
+    # model = YoloModel(conf_data['server_conf']['pt_model_path'])
+    # model = YoloOnnxModel(conf_data['server_conf']['onnx_model_path'])
+    model = YoloTrtModel(conf_data['server_conf']['trt_model_path'])
     if len(conf_data.keys()) < 0:
         print(f"[{datetime.now}] yaml config file is empty!")
         return
     request_queue = queue.Queue(maxsize=100)
     response_queue = queue.Queue(maxsize=100)
-    detect_thread = Thread(target=detect_main, args=(request_queue, response_queue, conf_data))
-    detect_thread.start()
-    asyncio.run(ws_main(conf_data, request_queue, response_queue))
-    detect_thread.join()
+
+    ws_main_thread= threading.Thread(target=ws_thread, args=(conf_data, request_queue, response_queue))
+    ws_main_thread.start()
+
+    while True:
+        try:
+            request_msg = request_queue.get_nowait()
+        except queue.Empty:
+            time.sleep(0.5)
+            continue
+        print(f"[{datetime.now()}] receive request msg : {request_msg}")
+        if request_msg['cmd'] == 'detect_video':
+            ret = detect_video(model, request_msg,conf_data['server_conf']['origin_video_path'], conf_data['server_conf']['predict_video_save_path'])
+            print(f"[{datetime.now()}] detect video finish, response : {ret}")
+            response_queue.put(ret)
+
+    ws_main_thread.join()
 
 if __name__ == '__main__':
     main()

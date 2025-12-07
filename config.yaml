@@ -1,5 +1,7 @@
 server_conf:
-  model_path: D:/code/project/python/BD-model-detetion/model/best.onnx
+  pt_model_path: D:/code/project/python/BD-model-detetion/model/best.pt
+  onnx_model_path: D:/code/project/python/BD-model-detetion/model/best.onnx
+  trt_model_path: D:/code/project/python/BD-model-detetion/model/best.engine
   server_conf: ws://192.168.31.240:8080/bd/ws/bd_model_detection
   origin_video_path: D:/work/bd/video
   predict_video_save_path: D:/work/bd/predict_video
